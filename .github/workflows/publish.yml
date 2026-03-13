@@ -1,0 +1,218 @@
+# 该工作流只能通过正式版本的标签自动触发
+
+name: Publish Release
+
+on:
+    push:
+        tags:
+            - "[0-9]+.[0-9]+.[0-9]+" # 匹配 x.y.z 格式的正式版本标签
+
+permissions:
+    contents: write
+
+jobs:
+    publish:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
+            - name: Setup Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: "1.26.0"
+
+            - name: Get tag version
+              id: get_version
+              run: |
+                  VERSION=${GITHUB_REF#refs/tags/}
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  echo "Publishing version: $VERSION"
+
+            - name: Get build time
+              id: get_build_time
+              run: |
+                  BUILDTIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                  echo "buildtime=$BUILDTIME" >> $GITHUB_OUTPUT
+
+            - name: Build binaries for common platforms
+              run: |
+                  # 创建输出目录
+                  mkdir -p build
+
+                  VERSION="${{ steps.get_version.outputs.version }}"
+                  BUILDTIME="${{ steps.get_build_time.outputs.buildtime }}"
+                  LDFLAGS="-s -w -X 'battery-info/cmd.Version=$VERSION' -X 'battery-info/cmd.BuildTime=$BUILDTIME'"
+
+                  echo "========================================"
+                  echo "开始交叉编译 Go 二进制文件（仅常用平台）"
+                  echo "========================================"
+                  echo ""
+
+                  # Windows (常用架构)
+                  echo "[1/11] 编译 Windows x86 (386)..."
+                  GOOS=windows GOARCH=386 go build -ldflags="$LDFLAGS" -o build/bti-windows-386.exe
+                  echo "完成"
+
+                  echo "[2/11] 编译 Windows x64 (amd64)..."
+                  GOOS=windows GOARCH=amd64 go build -ldflags="$LDFLAGS" -o build/bti-windows-amd64.exe
+                  echo "完成"
+
+                  echo "[3/11] 编译 Windows ARM64..."
+                  GOOS=windows GOARCH=arm64 go build -ldflags="$LDFLAGS" -o build/bti-windows-arm64.exe
+                  echo "完成"
+
+                  # Linux (常用架构)
+                  echo ""
+                  echo "[4/11] 编译 Linux x86 (386)..."
+                  GOOS=linux GOARCH=386 go build -ldflags="$LDFLAGS" -o build/bti-linux-386
+                  echo "完成"
+
+                  echo "[5/11] 编译 Linux x64 (amd64)..."
+                  GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o build/bti-linux-amd64
+                  echo "完成"
+
+                  echo "[6/11] 编译 Linux ARM (armv7)..."
+                  GOOS=linux GOARCH=arm go build -ldflags="$LDFLAGS" -o build/bti-linux-arm
+                  echo "完成"
+
+                  echo "[7/11] 编译 Linux ARM64..."
+                  GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o build/bti-linux-arm64
+                  echo "完成"
+
+                  # macOS (Darwin) (常用架构)
+                  echo ""
+                  echo "[8/11] 编译 macOS x64 (amd64)..."
+                  GOOS=darwin GOARCH=amd64 go build -ldflags="$LDFLAGS" -o build/bti-darwin-amd64
+                  echo "完成"
+
+                  echo "[9/11] 编译 macOS ARM64 (Apple Silicon)..."
+                  GOOS=darwin GOARCH=arm64 go build -ldflags="$LDFLAGS" -o build/bti-darwin-arm64
+                  echo "完成"
+
+                  # FreeBSD (常用架构)
+                  echo ""
+                  echo "[10/11] 编译 FreeBSD x64 (amd64)..."
+                  GOOS=freebsd GOARCH=amd64 go build -ldflags="$LDFLAGS" -o build/bti-freebsd-amd64
+                  echo "完成"
+
+                  echo "[11/11] 编译 FreeBSD ARM64..."
+                  GOOS=freebsd GOARCH=arm64 go build -ldflags="$LDFLAGS" -o build/bti-freebsd-arm64
+                  echo "完成"
+
+                  # 显示编译结果
+                  echo ""
+                  echo "========================================"
+                  echo "编译完成！统计信息："
+                  echo "========================================"
+                  echo "总文件数: $(ls -1 build/ | wc -l)"
+                  echo "总大小: $(du -sh build/ | cut -f1)"
+
+            - name: Find previous version tag
+              id: previous_tag
+              run: |
+                  # 获取当前标签
+                  CURRENT_TAG="${{ steps.get_version.outputs.version }}"
+
+                  # 获取所有正式版本标签，按版本号排序，找到当前标签之前的最新标签
+                  PREVIOUS_TAG=$(git tag -l --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^$CURRENT_TAG$" | head -n1)
+
+                  if [ -n "$PREVIOUS_TAG" ]; then
+                    echo "Found previous tag: $PREVIOUS_TAG"
+                    echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+                  else
+                    echo "No previous tag found"
+                    echo "previous_tag=" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Generate release notes
+              id: release_notes
+              run: |
+                  CURRENT_TAG="${{ steps.get_version.outputs.version }}"
+                  PREVIOUS_TAG="${{ steps.previous_tag.outputs.previous_tag }}"
+
+                  # 快速下载表格
+                  echo "## 📥 快速下载" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "| 架构 | Windows | Linux | macOS | FreeBSD |" >> release_notes.md
+                  echo "|------|---------|-------|-------|---------|" >> release_notes.md
+                  echo "| **x86 (32位)** | [x86](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-windows-386.exe) | [x86](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-linux-386) | 不支持 | 不支持 |" >> release_notes.md
+                  echo "| **x64 (64位)** | [x64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-windows-amd64.exe) | [x64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-linux-amd64) | [x64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-darwin-amd64) | [x64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-freebsd-amd64) |" >> release_notes.md
+                  echo "| **ARM64** | [ARM64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-windows-arm64.exe) | [ARM64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-linux-arm64) | [ARM64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-darwin-arm64) | [ARM64](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-freebsd-arm64) |" >> release_notes.md
+                  echo "| **ARM (armv7)** | 不支持 | [ARM](https://github.com/Jy-EggRoll/bti/releases/download/$CURRENT_TAG/bti-linux-arm) | 不支持 | 不支持 |" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "> 💡 **提示**：Windows 用户下载 \`.exe\` 文件，其他系统下载后需要添加执行权限 \`chmod +x bti-*\`" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "---" >> release_notes.md
+                  echo "" >> release_notes.md
+
+                  # 检查是否有 CHANGELOG.md 文件并提取相关版本信息
+                  if [ -f "CHANGELOG.md" ]; then
+                    echo "## 更新内容" >> release_notes.md
+                    
+                    # 尝试从 CHANGELOG 中提取当前版本的更新内容
+                    awk -v version="$CURRENT_TAG" '
+                      /^##/ { 
+                        if (found) exit
+                        if ($0 ~ version) found=1
+                        next
+                      }
+                      found && /^##/ { exit }
+                      found { print }
+                    ' CHANGELOG.md >> release_notes.md
+                  fi
+
+                  echo "## 提交记录" >> release_notes.md
+                  echo "" >> release_notes.md
+
+                  # 生成提交记录（保留开发版本相关的提交）
+                  if [ -z "$PREVIOUS_TAG" ]; then
+                    echo "生成从初始提交到 $CURRENT_TAG 的提交记录"
+                    git log --pretty=format:"- %s (%h)" --no-merges >> release_notes.md
+                  else
+                    echo "生成从 $PREVIOUS_TAG 到 $CURRENT_TAG 的提交记录"
+                    git log "$PREVIOUS_TAG..$CURRENT_TAG" --pretty=format:"- %s (%h)" --no-merges >> release_notes.md
+                  fi
+
+                  # 如果没有提交记录，添加默认信息
+                  if [ ! -s release_notes.md ] || [ $(wc -l < release_notes.md) -le 5 ]; then
+                    echo "- 版本发布" >> release_notes.md
+                  fi
+
+                  echo "" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "---" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "📦 **安装说明：**" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "1. 从上方表格中选择并下载对应平台和架构的二进制文件" >> release_notes.md
+                  echo "2. Linux/macOS/BSD 用户需要赋予执行权限：\`chmod +x bti-*\`（建议直接将文件改名为 bti 方便调用和后续的升级）" >> release_notes.md
+                  echo "3. 运行程序（建议直接将文件改名为 bti 方便调用）\`bti help\`" >> release_notes.md
+                  echo "" >> release_notes.md
+                  echo "详细使用说明请参考 [README.md](https://github.com/Jy-EggRoll/bti/blob/main/README.md)" >> release_notes.md
+
+                  echo "生成的发布说明："
+                  cat release_notes.md
+
+            - name: Create GitHub Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  tag_name: ${{ steps.get_version.outputs.version }}
+                  name: "bti v${{ steps.get_version.outputs.version }}"
+                  body_path: release_notes.md
+                  files: |
+                      build/*
+                  draft: false
+                  prerelease: false
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Upload build artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: binaries-${{ steps.get_version.outputs.version }}
+                  path: build/*
+                  retention-days: 90
