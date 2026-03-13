@@ -1,6 +1,6 @@
 module battery-info // 跨平台的电池信息查询工具，CLI 软件
 
-go 1.25.3
+go 1.26.0
 
 require (
 	github.com/distatus/battery v0.11.0
